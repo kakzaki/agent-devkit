@@ -25,14 +25,17 @@
       "name": "orders",
       "sampleCount": 80,
       "waitP95Ms": 2400,
+      "waitSampleCount": 75,
       "durationP95Ms": 12000,
-      "retryRate": 0.02
+      "retryRate": 0.02,
+      "retrySampleCount": 80
     }
   ],
   "cache": {
     "driver": "redis",
     "sampleCount": 300,
     "hitRate": 0.72,
+    "hitSampleCount": 295,
     "operationWaitP95Ms": 4,
     "evictionsPerMinuteP95": 0,
     "memoryBytesP95": 120000000

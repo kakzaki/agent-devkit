@@ -49,6 +49,9 @@ try {
   assert.ok(fs.existsSync(path.join(claudeSkill, "SKILL.md")));
   assert.ok(!fs.existsSync(path.join(claudeSkill, "stale.txt")));
   assert.ok(fs.existsSync(path.join(claudeSkill, "scripts", "perf-scan.js")));
+  assert.ok(fs.existsSync(path.join(claudeSkill, "scripts", "import-otel.js")));
+  assert.ok(fs.existsSync(path.join(claudeSkill, "scripts", "plan-review.js")));
+  assert.ok(fs.existsSync(path.join(claudeSkill, "scripts", "php-analysis.js")));
   assert.ok(fs.existsSync(path.join(openCodeSkill, "SKILL.md")));
   assert.match(fs.readFileSync(path.join(claudeSkill, "SKILL.md"), "utf8"), /N\+1/i);
 

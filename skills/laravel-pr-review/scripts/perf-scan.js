@@ -3,6 +3,9 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { inspectPhpSource } = require("./php-analysis");
+const { compareProfiles, exceedsRegressionGate } = require("./profile-compare");
+const { inspectSchema, loadPlan, loadSchema } = require("./plan-review");
 
 const TOOL = "Agent DevKit Laravel Performance Check";
 const SKIP_DIRS = new Set([
@@ -33,19 +36,37 @@ const ALLOWED_LIMITS = new Set([...Object.keys(DEFAULT_LIMITS), ...OPTIONAL_LIMI
 
 function parseArgs(args) {
   if (args.includes("--help") || args.includes("-h")) return { help: true };
-  const options = { root: null, profile: null, json: false, maxFiles: 5000 };
+  const options = {
+    root: null, profile: null, baseline: null, plan: null, planEngine: "auto", schema: null,
+    json: false, markdown: false, maxFiles: 5000, planRowReview: 10000, failOnRegression: undefined,
+  };
   let index = 0;
   while (index < args.length) {
     const arg = args[index++];
     if (arg === "--json") options.json = true;
-    else if (arg === "--profile" || arg === "--max-files") {
+    else if (arg === "--markdown") options.markdown = true;
+    else if (["--profile", "--baseline", "--plan", "--plan-engine", "--schema", "--max-files", "--plan-row-review", "--fail-on-regression"].includes(arg)) {
       if (!args[index] || args[index].startsWith("--")) throw new Error(`${arg} requires a value.`);
       const value = args[index++];
       if (arg === "--profile") options.profile = value;
+      else if (arg === "--baseline") options.baseline = value;
+      else if (arg === "--plan") options.plan = value;
+      else if (arg === "--plan-engine") options.planEngine = value;
+      else if (arg === "--schema") options.schema = value;
+      else if (arg === "--fail-on-regression") {
+        options.failOnRegression = Number(value);
+        if (!Number.isFinite(options.failOnRegression) || options.failOnRegression < 0 || options.failOnRegression > 1000) {
+          throw new Error("--fail-on-regression must be a percentage from 0 to 1000.");
+        }
+      }
       else {
-        options.maxFiles = Number(value);
-        if (!Number.isInteger(options.maxFiles) || options.maxFiles < 1 || options.maxFiles > 50000) {
-          throw new Error("--max-files must be an integer from 1 to 50000.");
+        const number = Number(value);
+        if (!Number.isSafeInteger(number) || number < 1) throw new Error(`${arg} must be a positive safe integer.`);
+        if (arg === "--max-files") {
+          options.maxFiles = number;
+          if (options.maxFiles > 50000) throw new Error("--max-files cannot exceed 50000.");
+        } else {
+          options.planRowReview = number;
         }
       }
     } else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
@@ -53,6 +74,10 @@ function parseArgs(args) {
     else throw new Error(`Unexpected argument: ${arg}`);
   }
   if (!options.root) throw new Error("Provide a Laravel project directory.");
+  if (options.json && options.markdown) throw new Error("Choose either --json or --markdown.");
+  if (options.baseline && !options.profile) throw new Error("--baseline requires a current --profile.");
+  if (options.failOnRegression !== undefined && !options.baseline) throw new Error("--fail-on-regression requires --baseline.");
+  if (!["auto", "postgresql", "mysql"].includes(options.planEngine)) throw new Error("--plan-engine must be auto, postgresql, or mysql.");
   options.root = path.resolve(options.root);
   let rootStat;
   try {
@@ -72,13 +97,20 @@ Usage:
 
 Options:
   --profile <file>   Read sanitized aggregate measurements (JSON, schema version 1)
+  --baseline <file>  Compare the current --profile with a sanitized baseline profile
+  --fail-on-regression <pct>  Exit 1 when a compared metric regresses by this percentage
+  --plan <file>      Read offline PostgreSQL or MySQL EXPLAIN JSON (never executes SQL)
+  --plan-engine <db> auto, postgresql, or mysql (default: auto)
+  --plan-row-review <n>  Estimated rows for scan/sort review (default: 10000)
+  --schema <file>    Read sanitized table/index/foreign-key metadata JSON
   --json             Print machine-readable findings
+  --markdown         Print a Markdown report
   --max-files <n>    Maximum PHP files to inspect (default: 5000, max: 50000)
   -h, --help         Show this message
 
 The source scan reads PHP files only. With --profile, it also reads that explicitly supplied JSON file.
-It makes no network or database connections and writes no files.
-Static results are review candidates, not proof of a production bottleneck.`;
+It makes no network or database connections, executes no SQL, and writes no files.
+Static results and explain/schema checks are review candidates, not proof of a production bottleneck.`;
 }
 
 function isSkippedDirectory(relativePath, name) {
@@ -132,174 +164,14 @@ function collectPhpFiles(root, maxFiles) {
   return { files: files.sort(), skippedLarge, truncated };
 }
 
-function removeComments(lines) {
-  let inBlock = false;
-  return lines.map((line) => {
-    let result = "";
-    let index = 0;
-    let quote = null;
-    let escaped = false;
-    while (index < line.length) {
-      if (inBlock) {
-        const end = line.indexOf("*/", index);
-        if (end < 0) return result;
-        index = end + 2;
-        inBlock = false;
-      } else if (quote) {
-        const char = line[index++];
-        result += char;
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === quote) quote = null;
-      } else if (line[index] === "'" || line[index] === '"' || line[index] === "`") {
-        quote = line[index];
-        result += line[index++];
-      } else if (line.startsWith("/*", index)) {
-        inBlock = true;
-        index += 2;
-      } else if (line.startsWith("//", index) || (line[index] === "#" && !line.startsWith("#[", index))) {
-        break;
-      } else {
-        result += line[index++];
-      }
-    }
-    return result;
-  });
-}
-
-function safePath(root, file) {
-  return path.relative(root, file).split(path.sep).join("/").replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 240);
-}
-
-function addStaticFinding(findings, root, file, line, rule, confidence, evidence, recommendation) {
-  findings.push({
-    rule,
-    severity: "review",
-    confidence,
-    source: "static",
-    location: `${safePath(root, file)}:${line + 1}`,
-    evidence,
-    recommendation,
-  });
-}
-
-function braceDelta(line) {
-  let delta = 0;
-  let quote = null;
-  let escaped = false;
-  for (const char of line) {
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === quote) quote = null;
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (char === "{") delta++;
-    else if (char === "}") delta--;
-  }
-  return delta;
-}
-
-function loopRange(lines, start) {
-  let depth = 0;
-  let opened = false;
-  const limit = Math.min(lines.length - 1, start + 120);
-  for (let line = start; line <= limit; line++) {
-    const delta = braceDelta(lines[line]);
-    if (delta > 0) opened = true;
-    depth += delta;
-    if (opened && depth <= 0) return [start, line];
-    if (!opened && line > start) return [start, start];
-  }
-  return [start, limit];
-}
-
-function expressionContext(lines, line) {
-  let start = Math.max(0, line - 12);
-  for (let cursor = line - 1; cursor >= start; cursor--) {
-    if (lines[cursor].includes(";") || lines[cursor].includes("}")) {
-      start = cursor + 1;
-      break;
-    }
-  }
-  return lines.slice(start, line + 1).join(" ");
-}
-
-function inspectPhp(file, root, findings) {
+function inspectPhp(file, root) {
   let content;
   try {
     content = fs.readFileSync(file, "utf8");
   } catch {
-    return;
+    return [];
   }
-  const lines = removeComments(content.split(/\r?\n/));
-
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (/\bforeach\s*\(/.test(line)) {
-      const [start, end] = loopRange(lines, index);
-      const body = lines.slice(start, end + 1).join(" ");
-      if (/\b(?:DB\s*::|\w+\s*::\s*(?:query|where|find|all)\b|->\s*(?:get|first|find|count|exists|value|sum|avg)\s*\()/i.test(body)) {
-        addStaticFinding(
-          findings, root, file, index, "DATABASE_CALL_IN_LOOP", "medium",
-          "A database-shaped call appears in a foreach body; confirm it runs once per item.",
-          "Move data access to a batch query or preload the required records, then compare query traces on an isolated dataset."
-        );
-      }
-      const scalarFields = new Set([
-        "id", "uuid", "name", "email", "title", "status", "slug", "created_at", "updated_at",
-        "deleted_at", "tenant_id", "type", "amount", "total", "currency", "active", "enabled",
-      ]);
-      const possibleRelationRead = [...body.matchAll(/\$[A-Za-z_]\w*\s*->\s*([A-Za-z_]\w*)\b(?!\s*\()/gi)]
-        .some((match) => !scalarFields.has(match[1].toLowerCase()));
-      if (possibleRelationRead) {
-        addStaticFinding(
-          findings, root, file, index, "RELATION_ACCESS_IN_LOOP", "low",
-          "An object property is read in a foreach body; it may be an Eloquent relation that lazy-loads.",
-          "Check the model relation and serializer path. If it issues a query per item, eager-load only the needed relation and validate query counts in tests."
-        );
-      }
-    }
-
-    if (/->\s*get\s*\(/i.test(line)) {
-      const context = expressionContext(lines, index);
-      if (!/->\s*(?:limit|take|paginate|simplePaginate|cursorPaginate|chunk|chunkById|cursor|lazy)\s*\(/i.test(context)) {
-        addStaticFinding(
-          findings, root, file, index, "COLLECTION_GET_WITHOUT_VISIBLE_BOUND", "low",
-          "A query-shaped get() has no page, limit, or streaming method in its nearby expression.",
-          "Verify the maximum result size. Select only required columns and add bounded pagination or chunked processing where the response contract permits."
-        );
-      }
-    }
-
-    if (/\bselect\s+\*\s+from\b/i.test(line)) {
-      addStaticFinding(
-        findings, root, file, index, "RAW_SELECT_STAR", "medium",
-        "A raw SQL string appears to request every column.",
-        "List the columns needed by this path and confirm that omitting fields preserves model, authorization, and serialization behavior."
-      );
-    }
-
-    if (/(?:->|::)\s*(?:simplePaginate|paginate)\s*\(\s*(?:request\s*\(|\$request\s*->\s*(?:input|query)\s*\()/i.test(line)) {
-      addStaticFinding(
-        findings, root, file, index, "UNBOUNDED_PAGE_SIZE_INPUT", "medium",
-        "Pagination size appears to come directly from request input.",
-        "Clamp the requested page size to a documented server-side maximum and test invalid, negative, and unusually large values."
-      );
-    }
-
-    if (/->\s*count\s*\(\s*\)\s*(?:>|!==?\s*0|!=\s*0)/i.test(line)) {
-      addStaticFinding(
-        findings, root, file, index, "COUNT_USED_AS_BOOLEAN", "low",
-        "A count result appears to be used only as an existence check.",
-        "If only presence matters, compare the semantics and consider an existence query rather than counting every match."
-      );
-    }
-  }
+  return inspectPhpSource(content, root, file);
 }
 
 function assertObject(value, label, allowedKeys) {
@@ -310,7 +182,7 @@ function assertObject(value, label, allowedKeys) {
 }
 
 function numeric(value, label, integer = false) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || (integer && !Number.isSafeInteger(value))) {
     throw new Error(`${label} must be a non-negative${integer ? " integer" : " number"}.`);
   }
 }
@@ -332,8 +204,14 @@ function validateProfile(profile) {
   const queryKeys = new Set(["hash", "callsPerRequestP95", "timeP95Ms"]);
   for (const [index, route] of profile.routes.entries()) {
     assertObject(route, `routes[${index}]`, routeKeys);
+    const routeParts = typeof route.template === "string" ? route.template.split(" ") : [];
+    const routePath = routeParts[1] || "";
+    const routeSegments = routePath.split("/").slice(1).filter(Boolean);
+    const safeRouteSegments = routeSegments.every((segment) =>
+      /^\{[A-Za-z_][A-Za-z0-9_]{0,30}\}$/.test(segment) || /^[A-Za-z][A-Za-z0-9._~-]{0,39}$/.test(segment));
     if (typeof route.template !== "string" || route.template.length > 160 ||
-        !/^(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD) \/[A-Za-z0-9_{}:./-]*$/.test(route.template) || /\d{5,}/.test(route.template)) {
+        !/^(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|CONNECT|TRACE) \/[A-Za-z0-9_{}./-]*$/.test(route.template) ||
+        !safeRouteSegments || /\d{5,}|@|%[0-9a-f]{2}/i.test(route.template)) {
       throw new Error(`routes[${index}].template must be a redacted HTTP route pattern without query strings or record IDs.`);
     }
     numeric(route.sampleCount, `routes[${index}].sampleCount`, true);
@@ -352,7 +230,7 @@ function validateProfile(profile) {
     }
   }
 
-  const queueKeys = new Set(["name", "sampleCount", "waitP95Ms", "durationP95Ms", "retryRate"]);
+  const queueKeys = new Set(["name", "sampleCount", "waitP95Ms", "waitSampleCount", "durationP95Ms", "retryRate", "retrySampleCount"]);
   for (const [index, queue] of (profile.queues || []).entries()) {
     assertObject(queue, `queues[${index}]`, queueKeys);
     if (typeof queue.name !== "string" || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(queue.name)) {
@@ -360,23 +238,37 @@ function validateProfile(profile) {
     }
     numeric(queue.sampleCount, `queues[${index}].sampleCount`, true);
     if (queue.sampleCount < 1) throw new Error(`queues[${index}].sampleCount must be greater than zero.`);
-    for (const key of ["waitP95Ms", "durationP95Ms", "retryRate"]) {
+    for (const key of ["waitP95Ms", "waitSampleCount", "durationP95Ms", "retryRate", "retrySampleCount"]) {
       if (queue[key] !== undefined) numeric(queue[key], `queues[${index}].${key}`);
+    }
+    for (const key of ["waitSampleCount", "retrySampleCount"]) {
+      if (queue[key] !== undefined && (!Number.isSafeInteger(queue[key]) || queue[key] < 1)) {
+        throw new Error(`queues[${index}].${key} must be a positive integer.`);
+      }
+    }
+    for (const key of ["waitSampleCount", "retrySampleCount"]) {
+      if (queue[key] !== undefined && queue[key] > queue.sampleCount) throw new Error(`queues[${index}].${key} cannot exceed sampleCount.`);
     }
     if (queue.retryRate !== undefined && queue.retryRate > 1) throw new Error(`queues[${index}].retryRate must be a ratio from 0 to 1.`);
   }
 
   let cache = null;
   if (profile.cache !== undefined) {
-    const cacheKeys = new Set(["driver", "sampleCount", "hitRate", "operationWaitP95Ms", "evictionsPerMinuteP95", "memoryBytesP95"]);
+    const cacheKeys = new Set(["driver", "sampleCount", "hitRate", "hitSampleCount", "operationWaitP95Ms", "evictionsPerMinuteP95", "memoryBytesP95"]);
     assertObject(profile.cache, "cache", cacheKeys);
     if (!["redis", "memcached", "database", "file", "array", "other"].includes(profile.cache.driver)) {
       throw new Error("cache.driver must name a supported cache backend.");
     }
     numeric(profile.cache.sampleCount, "cache.sampleCount", true);
     if (profile.cache.sampleCount < 1) throw new Error("cache.sampleCount must be greater than zero.");
-    for (const key of ["hitRate", "operationWaitP95Ms", "evictionsPerMinuteP95", "memoryBytesP95"]) {
+    for (const key of ["hitRate", "hitSampleCount", "operationWaitP95Ms", "evictionsPerMinuteP95", "memoryBytesP95"]) {
       if (profile.cache[key] !== undefined) numeric(profile.cache[key], `cache.${key}`);
+    }
+    if (profile.cache.hitSampleCount !== undefined && (!Number.isSafeInteger(profile.cache.hitSampleCount) || profile.cache.hitSampleCount < 1)) {
+      throw new Error("cache.hitSampleCount must be a positive integer.");
+    }
+    if (profile.cache.hitSampleCount !== undefined && profile.cache.hitSampleCount > profile.cache.sampleCount) {
+      throw new Error("cache.hitSampleCount cannot exceed cache.sampleCount.");
     }
     if (profile.cache.hitRate !== undefined && profile.cache.hitRate > 1) throw new Error("cache.hitRate must be a ratio from 0 to 1.");
     cache = profile.cache;
@@ -482,19 +374,19 @@ function inspectProfile(profile, findings) {
     }
   }
   for (const queue of profile.queues) {
-    addMeasuredFinding(findings, "QUEUE_WAIT_P95", `queue:${queue.name}`, "Queue wait ms", queue.waitP95Ms,
-      limits.queueWaitP95Ms, queue.sampleCount, "Compare arrival rate, worker availability, queue priority, and downstream capacity.");
+      addMeasuredFinding(findings, "QUEUE_WAIT_P95", `queue:${queue.name}`, "Queue wait ms", queue.waitP95Ms,
+      limits.queueWaitP95Ms, queue.waitSampleCount || queue.sampleCount, "Compare arrival rate, worker availability, queue priority, and downstream capacity.");
     addMeasuredFinding(findings, "QUEUE_DURATION_P95", `queue:${queue.name}`, "Job duration ms", queue.durationP95Ms,
       limits.queueDurationP95Ms, queue.sampleCount, "Profile the job, bound batch size, and preserve idempotency and retry behavior.");
     addMeasuredFinding(findings, "QUEUE_RETRY_RATE", `queue:${queue.name}`, "Job retry ratio", queue.retryRate,
-      limits.queueRetryRate, queue.sampleCount, "Inspect failure causes and retry policy; do not raise concurrency until downstream capacity is understood.", "aggregate ratio");
+      limits.queueRetryRate, queue.retrySampleCount || queue.sampleCount, "Inspect failure causes and retry policy; do not raise concurrency until downstream capacity is understood.", "aggregate ratio");
   }
   if (profile.cache) {
     const cache = profile.cache;
     const label = `cache:${cache.driver}`;
     if (profile.configuredLimits.cacheHitRateMin !== undefined) {
       addBelowLimitFinding(findings, "CACHE_HIT_RATE", label, "Cache hit ratio", cache.hitRate,
-        profile.configuredLimits.cacheHitRateMin, cache.sampleCount,
+        profile.configuredLimits.cacheHitRateMin, cache.hitSampleCount || cache.sampleCount,
         "Verify that the measured key population is expected to be cacheable, then inspect key scope, TTL, and invalidation before changing cache policy.");
     }
     addMeasuredFinding(findings, "CACHE_OPERATION_WAIT_P95", label, "Cache operation wait ms", cache.operationWaitP95Ms,
@@ -527,10 +419,18 @@ function inspectProfile(profile, findings) {
 function analyze(options) {
   const { files, skippedLarge, truncated } = collectPhpFiles(options.root, options.maxFiles);
   const findings = [];
-  for (const file of files) inspectPhp(file, options.root, findings);
+  for (const file of files) findings.push(...inspectPhp(file, options.root));
 
   const profile = options.profile ? readProfile(path.resolve(options.profile)) : null;
   const profileSummary = inspectProfile(profile, findings);
+  const baseline = options.baseline ? readProfile(path.resolve(options.baseline)) : null;
+  const comparison = baseline ? compareProfiles(baseline, profile) : null;
+  const plan = options.plan ? loadPlan(path.resolve(options.plan), options.planEngine, options.planRowReview) : null;
+  const schema = options.schema ? loadSchema(path.resolve(options.schema)) : null;
+  if (plan && schema && plan.engine !== schema.engine) throw new Error("EXPLAIN plan and schema metadata engines must match.");
+  if (plan) findings.push(...plan.findings);
+  const schemaSummary = schema ? inspectSchema(schema) : null;
+  if (schemaSummary) findings.push(...schemaSummary.findings);
   const order = { high: 0, medium: 1, review: 2 };
   findings.sort((left, right) => order[left.severity] - order[right.severity] ||
     left.location.localeCompare(right.location) || left.rule.localeCompare(right.rule));
@@ -541,6 +441,9 @@ function analyze(options) {
     skippedOversizeFiles: skippedLarge,
     fileLimitReached: truncated,
     profile: profileSummary,
+    comparison,
+    plan: plan ? { engine: plan.engine, nodeCount: plan.nodeCount, rowReviewThreshold: plan.rowReviewThreshold, nodes: plan.nodes } : null,
+    schema: schemaSummary ? { engine: schema.engine, ...schemaSummary } : null,
     profileMeasurements: profile ? {
       routes: profile.routes,
       queues: profile.queues,
@@ -550,10 +453,11 @@ function analyze(options) {
     thresholds: profile ? { ...profile.limits, ...profile.configuredLimits } : null,
     findingCount: findings.length,
     findings,
+    regressionGateExceeded: comparison ? exceedsRegressionGate(comparison, options.failOnRegression) : false,
     limitations: [
-      "Static patterns are candidates and may be false positives; inspect surrounding code.",
-      "Missing indexes, real latency, memory, CPU, and connection behavior cannot be proven from source alone.",
-      "Profile metrics are user-supplied aggregates, not measurements performed by this tool.",
+      "PHP checks are lexical structural candidates, not a complete PHP AST or proof of runtime behavior.",
+      "EXPLAIN checks use planner estimates; schema metadata omits engine-specific index semantics and must be verified against a real catalog.",
+      "Profiles come from user-supplied aggregates or offline OTLP spans; this tool does not collect or independently verify telemetry.",
     ],
   };
 }
@@ -575,13 +479,13 @@ function printReport(result, json) {
       process.stdout.write(`  ${route.template} (${route.sampleCount} samples): ${values.join(", ")}\n`);
     }
     for (const queue of result.profileMeasurements.queues) {
-      const values = ["waitP95Ms", "durationP95Ms", "retryRate"]
+      const values = ["waitP95Ms", "waitSampleCount", "durationP95Ms", "retryRate", "retrySampleCount"]
         .filter((key) => queue[key] !== undefined).map((key) => `${key}=${queue[key]}`);
       process.stdout.write(`  queue:${queue.name} (${queue.sampleCount} samples): ${values.join(", ")}\n`);
     }
     if (result.profileMeasurements.cache) {
       const cache = result.profileMeasurements.cache;
-      const values = ["hitRate", "operationWaitP95Ms", "evictionsPerMinuteP95", "memoryBytesP95"]
+      const values = ["hitRate", "hitSampleCount", "operationWaitP95Ms", "evictionsPerMinuteP95", "memoryBytesP95"]
         .filter((key) => cache[key] !== undefined).map((key) => `${key}=${cache[key]}`);
       process.stdout.write(`  cache:${cache.driver} (${cache.sampleCount} samples): ${values.join(", ")}\n`);
     }
@@ -592,6 +496,17 @@ function printReport(result, json) {
       process.stdout.write(`  runtime:${runtime.pool} (${runtime.sampleCount} samples): ${values.join(", ")}\n`);
     }
   }
+  if (result.comparison) {
+    process.stdout.write(`Baseline comparison (${result.comparison.baselineEnvironment} → ${result.comparison.currentEnvironment}): ${result.comparison.regressionCount}/${result.comparison.comparedMetricCount} regressions\n`);
+    for (const metric of result.comparison.metrics) {
+      const change = metric.changePercent === null
+        ? `new from zero (${metric.regression ? "regression" : "improvement"})` : `${metric.changePercent}%`;
+      process.stdout.write(`  ${metric.regression ? "REGRESSION" : "OK"} ${metric.scope} ${metric.metric}: ${metric.baseline} -> ${metric.current} (${change})\n`);
+    }
+    if (result.regressionGateExceeded && result.comparison.comparedMetricCount === 0) {
+      process.stdout.write("  No metrics matched; the regression gate fails closed.\n");
+    }
+  }
   if (!result.findings.length) process.stdout.write("No candidate patterns crossed the configured thresholds. This is not proof of good performance.\n");
   for (const finding of result.findings) {
     process.stdout.write(`\n[${finding.severity.toUpperCase()}] ${finding.rule} — ${finding.location}\n`);
@@ -600,12 +515,52 @@ function printReport(result, json) {
   for (const limitation of result.limitations) process.stdout.write(`\nNote: ${limitation}\n`);
 }
 
+function markdownCell(value) {
+  return String(value ?? "—").replace(/[|\r\n]/g, " ").replace(/[`*_{}\[\]<>#\\]/g, "\\$&");
+}
+
+function printMarkdown(result) {
+  process.stdout.write(`# ${result.tool}\n\n`);
+  process.stdout.write(`PHP files scanned: ${result.scannedPhpFiles}; skipped large: ${result.skippedOversizeFiles}${result.fileLimitReached ? "; file limit reached" : ""}.\n\n`);
+  if (result.profile) process.stdout.write(`Profile: ${result.profile.environment}; routes ${result.profile.routeCount}; queues ${result.profile.queueCount}.\n\n`);
+  if (result.comparison) {
+    process.stdout.write(`## Baseline comparison\n\nEnvironment: ${result.comparison.baselineEnvironment} → ${result.comparison.currentEnvironment}. Regressions: ${result.comparison.regressionCount}/${result.comparison.comparedMetricCount}.\n\n`);
+    process.stdout.write("| Scope | Metric | Baseline | Current | Change | Result |\n|---|---|---:|---:|---:|---|\n");
+    for (const metric of result.comparison.metrics) {
+      const change = metric.changePercent === null
+        ? `new from zero (${metric.regression ? "regression" : "improvement"})` : `${metric.changePercent}%`;
+      process.stdout.write(`| ${markdownCell(metric.scope)} | ${markdownCell(metric.metric)} | ${metric.baseline} | ${metric.current} | ${change} | ${metric.regression ? "Regression" : "No regression"} |\n`);
+    }
+    if (result.comparison.newRoutes.length || result.comparison.removedRoutes.length) {
+      process.stdout.write(`\nNew routes: ${result.comparison.newRoutes.map(markdownCell).join(", ") || "none"}; removed routes: ${result.comparison.removedRoutes.map(markdownCell).join(", ") || "none"}.\n`);
+    }
+    if (result.regressionGateExceeded && result.comparison.comparedMetricCount === 0) {
+      process.stdout.write("\nNo comparable metrics were found; the regression gate fails closed.\n");
+    }
+    process.stdout.write("\n");
+  }
+  if (result.plan) process.stdout.write(`EXPLAIN: ${result.plan.engine}; ${result.plan.nodeCount} sanitized plan nodes; row review threshold ${result.plan.rowReviewThreshold}.\n\n`);
+  if (result.schema) process.stdout.write(`Schema metadata: ${result.schema.engine}; ${result.schema.tableCount} tables; ${result.schema.indexCount} indexes.\n\n`);
+  process.stdout.write("## Findings\n\n");
+  if (!result.findings.length) process.stdout.write("No candidate findings. This is not proof of good performance.\n\n");
+  for (const finding of result.findings) {
+    process.stdout.write(`### ${markdownCell(finding.rule)} — ${markdownCell(finding.location)}\n\n`);
+    process.stdout.write(`- Severity: ${markdownCell(finding.severity)}\n- Evidence: ${markdownCell(finding.evidence)}\n- Recommendation: ${markdownCell(finding.recommendation)}\n\n`);
+  }
+  process.stdout.write("## Limitations\n\n");
+  for (const limitation of result.limitations) process.stdout.write(`- ${markdownCell(limitation)}\n`);
+  if (result.regressionGateExceeded) process.stdout.write("\n**Regression gate failed.**\n");
+}
+
 try {
   if (process.argv.slice(2).includes("--help") || process.argv.slice(2).includes("-h")) {
     process.stdout.write(`${helpText()}\n`);
   } else {
     const options = parseArgs(process.argv.slice(2));
-    printReport(analyze(options), options.json);
+    const result = analyze(options);
+    if (options.markdown) printMarkdown(result);
+    else printReport(result, options.json);
+    if (result.regressionGateExceeded) process.exitCode = 1;
   }
 } catch (error) {
   process.stderr.write(`Error: ${error.message}\n`);

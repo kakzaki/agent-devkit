@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "engine": "postgresql",
+  "tables": [
+    {
+      "name": "orders",
+      "columns": ["id", "tenant_id", "created_at"],
+      "indexes": [
+        { "name": "orders_pkey", "columns": ["id"], "unique": true },
+        { "name": "orders_tenant_created_idx", "columns": ["tenant_id", "created_at"], "unique": false }
+      ],
+      "foreignKeys": [
+        { "name": "orders_tenant_fk", "columns": ["tenant_id"], "referencedTable": "tenants", "referencedColumns": ["id"] }
+      ]
+    }
+  ]
+}

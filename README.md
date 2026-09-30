@@ -43,10 +43,21 @@ The Laravel skill includes an optional static scanner. Run it from the Laravel a
 
 ```sh
 node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js .
-node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --profile ./sanitized-profile.json --json
+node /path/to/agent-devkit/skills/laravel-pr-review/scripts/import-otel.js ./traces.json --environment staging --output ./profile.json
+node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --profile ./profile.json --baseline ./baseline.json --markdown --fail-on-regression 10
+node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --plan ./explain.json --schema ./schema.json --markdown
 ```
 
-It flags source patterns for manual review and can summarize sanitized aggregate metrics. It does not connect to a database or service, execute SQL, or measure the application itself. See the skill guide for its input limits and evidence requirements.
+It can statically inspect PHP source, import an offline OpenTelemetry JSON trace export into sanitized aggregates, compare profiles, and review saved PostgreSQL/MySQL plans plus metadata-only schemas. It never connects to a database or service, executes SQL, or measures the application itself. See the skill guide for format examples, limits, and evidence requirements.
+
+Install the optional local pre-commit warning in a Laravel repository, then remove it when no longer needed:
+
+```sh
+node /path/to/agent-devkit/skills/laravel-pr-review/scripts/git-hook.js install --root .
+node /path/to/agent-devkit/skills/laravel-pr-review/scripts/git-hook.js uninstall --root .
+```
+
+The hook checks only staged PHP blobs from the Git index—not unstaged worktree contents. Findings and scanner errors are warnings; commits continue. Installation refuses to overwrite an existing hook, and uninstall removes only an unchanged Agent DevKit hook. This is a local convenience; CI is the better place for any required regression gate.
 
 ## Safety boundaries
 
