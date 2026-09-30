@@ -31,31 +31,33 @@ node bin/cli.js install laravel-pr-review production-db-safety --project --root 
 The default target is Claude Code and Codex. Choose one with `--claude`, `--codex`, or `--opencode`; combine targets with `--all-clients`. Use `--user` for your home directory or `--project --root <path>` for a repository. Pass `--all` only when you intend to install every skill.
 
 ```powershell
-node bin/cli.js where laravel-pr-review --project --root C:\path\to\app --opencode
-node bin/cli.js uninstall laravel-pr-review --project --root C:\path\to\app --opencode
+node bin/cli.js where laravel-pr-review production-db-safety --project --root C:\path\to\app --opencode
+node bin/cli.js uninstall laravel-pr-review production-db-safety --project --root C:\path\to\app --opencode
 ```
 
 The installer only touches the named skill directories. It stages a full copy before replacing an existing skill and attempts to restore the previous copy if the replacement fails.
 
-## Mini tutorial: use a skill with your agent
+### Install by asking your agent
 
-A skill is a set of instructions the coding agent reads; you don't run `SKILL.md` yourself. First install a coding-agent harness (such as Claude Code, Codex, or OpenCode) and Node.js 18+. Then, from the cloned Agent DevKit folder, install the Laravel review skill into your Laravel project:
+Open the Laravel project in your coding-agent harness and copy this prompt into its chat:
 
-```powershell
-node bin/cli.js install laravel-pr-review --project --root "C:\projects\my-laravel-app" --opencode
+```text
+I'm in the root of a Laravel project. Install both `laravel-pr-review` and `production-db-safety` from the official Agent DevKit repository at https://github.com/kakzaki/agent-devkit. Use its official `bin/cli.js` installer. If Agent DevKit isn't available locally, clone it outside this project. Detect the active supported harness and use its matching flag (`--claude`, `--codex`, or `--opencode`). Resolve this Laravel project's absolute path before running the installer. Install only these two skills at project scope, then verify both with the installer's `where` command. Do not edit application files, run database commands, or install a Git hook. Report the installed directories.
 ```
 
-Choose the flag for your harness: `--claude` for Claude Code, `--codex` for Codex, or `--opencode` for OpenCode. Use `--all-clients` if you want it available in all supported harnesses. Open the Laravel project in that harness; if the skill isn't listed yet, reload the project or start a new agent session.
+The agent still needs Node.js 18+ and permission to run the installer. If the skills don't appear afterward, reload the project or start a new agent session.
 
-If you'd rather ask the agent to install it, open the Laravel project in your harness and paste this prompt:
+## Mini tutorial: use both Laravel skills
 
-> Install the `laravel-pr-review` skill from https://github.com/kakzaki/agent-devkit into this Laravel project for the harness I'm using. Use Agent DevKit's official `bin/cli.js` installer. If Agent DevKit isn't available locally, clone it outside this Laravel project. Detect the active supported harness and use its matching flag (`--claude`, `--codex`, or `--opencode`). Resolve this Laravel project's absolute path before running the installer, install only this skill at project scope, and verify the result with the installer's `where` command. Do not edit application files or install a Git hook. Report the installed directory.
+A skill is a set of instructions the agent reads; you don't run `SKILL.md` yourself. Open the project in your harness and explicitly name both skills when the task could involve database changes. For example, copy and adapt this prompt:
 
-Now ask for the kind of help you need, for example:
+```text
+Use `laravel-pr-review` to review this Laravel endpoint for performance issues, including N+1 queries, slow database calls, unbounded results, and queue bottlenecks. If you recommend an index, migration, or schema change, also use `production-db-safety` to review its risks. Review only: do not connect to any database, run SQL or EXPLAIN ANALYZE, execute migrations, alter tables, or deploy changes. Use only the code and sanitized evidence I provide. If key database details are missing, mark the proposal CAUTION or BLOCKED and say what evidence is needed. Cite files and lines, and distinguish measurements from hypotheses.
+```
 
-> Review my Laravel changes for performance. Check for N+1 queries, slow database calls, unbounded results, and queue bottlenecks. Cite the relevant files and lines, and separate measured evidence from code-based suspicions.
+`laravel-pr-review` reviews application code and performance; `production-db-safety` reviews proposed database operations but never executes them. Skill selection depends on the harness, so explicitly naming both is more reliable than expecting automatic chaining. These skills are guidance, not technical access controls—production protection must also come from database permissions and the deployment process.
 
-Other phrases that can activate it include “review Laravel performance”, “why is this endpoint slow?”, “check for N+1”, or “optimasi performa Laravel”. Skill selection is automatic and depends on the harness; if it doesn't activate, ask the agent explicitly to use `laravel-pr-review`. The skill reviews and reports findings; it won't edit application files unless you ask it to.
+Other phrases that may activate `laravel-pr-review` include “review Laravel performance”, “why is this endpoint slow?”, “check for N+1”, or “optimasi performa Laravel”. It reports findings and doesn't edit application code unless you ask it to.
 
 ## Laravel performance check
 
