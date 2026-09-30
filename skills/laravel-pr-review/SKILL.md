@@ -1,6 +1,6 @@
 ---
 name: laravel-pr-review
-description: Inspect Laravel and PHP changes for correctness, security, maintainability, and backend performance. Use for Laravel pull requests, changed files, or requests about slow endpoints, Eloquent queries, queues, and PHP runtime behavior.
+description: Review Laravel/PHP changes for correctness, security, maintainability, and performance. Use for Laravel pull requests, commits, code diffs, or requests to review, audit, debug, or optimize a Laravel app, API, endpoint, Eloquent/database query, N+1 issue, queue/job, worker, memory use, or performance regression. Trigger on requests like "why is my Laravel app slow", "optimize this Laravel query", "check for N+1", or "optimasi performa Laravel".
 ---
 
 # Laravel Change Review
