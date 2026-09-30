@@ -37,6 +37,22 @@ node bin/cli.js uninstall laravel-pr-review --project --root C:\path\to\app --op
 
 The installer only touches the named skill directories. It stages a full copy before replacing an existing skill and attempts to restore the previous copy if the replacement fails.
 
+## Mini tutorial: use a skill with your agent
+
+A skill is a set of instructions the coding agent reads; you don't run `SKILL.md` yourself. First install a coding-agent harness (such as Claude Code, Codex, or OpenCode) and Node.js 18+. Then, from the cloned Agent DevKit folder, install the Laravel review skill into your Laravel project:
+
+```powershell
+node bin/cli.js install laravel-pr-review --project --root "C:\projects\my-laravel-app" --opencode
+```
+
+Choose the flag for your harness: `--claude` for Claude Code, `--codex` for Codex, or `--opencode` for OpenCode. Use `--all-clients` if you want it available in all supported harnesses. Open the Laravel project in that harness; if the skill isn't listed yet, reload the project or start a new agent session.
+
+Now ask for the kind of help you need, for example:
+
+> Review my Laravel changes for performance. Check for N+1 queries, slow database calls, unbounded results, and queue bottlenecks. Cite the relevant files and lines, and separate measured evidence from code-based suspicions.
+
+Other phrases that can activate it include “review Laravel performance”, “why is this endpoint slow?”, “check for N+1”, or “optimasi performa Laravel”. Skill selection is automatic and depends on the harness; if it doesn't activate, ask the agent explicitly to use `laravel-pr-review`. The skill reviews and reports findings; it won't edit application files unless you ask it to.
+
 ## Laravel performance check
 
 The Laravel skill includes an optional static scanner. Run it from the Laravel app root:
