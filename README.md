@@ -47,6 +47,10 @@ node bin/cli.js install laravel-pr-review --project --root "C:\projects\my-larav
 
 Choose the flag for your harness: `--claude` for Claude Code, `--codex` for Codex, or `--opencode` for OpenCode. Use `--all-clients` if you want it available in all supported harnesses. Open the Laravel project in that harness; if the skill isn't listed yet, reload the project or start a new agent session.
 
+If you'd rather ask the agent to install it, open the Laravel project in your harness and paste this prompt:
+
+> Install the `laravel-pr-review` skill from https://github.com/kakzaki/agent-devkit into this Laravel project for the harness I'm using. Use Agent DevKit's official `bin/cli.js` installer. If Agent DevKit isn't available locally, clone it outside this Laravel project. Detect the active supported harness and use its matching flag (`--claude`, `--codex`, or `--opencode`). Resolve this Laravel project's absolute path before running the installer, install only this skill at project scope, and verify the result with the installer's `where` command. Do not edit application files or install a Git hook. Report the installed directory.
+
 Now ask for the kind of help you need, for example:
 
 > Review my Laravel changes for performance. Check for N+1 queries, slow database calls, unbounded results, and queue bottlenecks. Cite the relevant files and lines, and separate measured evidence from code-based suspicions.
