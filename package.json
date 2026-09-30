@@ -1,0 +1,33 @@
+{
+  "name": "agent-devkit-skills",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Original, safety-minded instructions and a local installer for coding-agent skills.",
+  "bin": {
+    "agent-devkit": "bin/cli.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "skills/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "keywords": [
+    "agent-skills",
+    "developer-tools",
+    "laravel-performance",
+    "database-safety",
+    "web-performance"
+  ],
+  "author": "Agent DevKit contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/kakzaki/agent-devkit#readme"
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "environment": "staging",
+  "routes": [
+    {
+      "template": "GET /api/orders/{order}",
+      "sampleCount": 50,
+      "requestP95Ms": 1450,
+      "dbTimeP95Ms": 420,
+      "dbWaitP95Ms": 18,
+      "responseBytesP95": 180000,
+      "cpuP95Ms": 300,
+      "memoryBytesP95": 73400320,
+      "queryPatterns": [
+        {
+          "hash": "0123456789abcdef",
+          "callsPerRequestP95": 7,
+          "timeP95Ms": 110
+        }
+      ]
+    }
+  ],
+  "queues": [
+    {
+      "name": "orders",
+      "sampleCount": 80,
+      "waitP95Ms": 2400,
+      "durationP95Ms": 12000,
+      "retryRate": 0.02
+    }
+  ],
+  "cache": {
+    "driver": "redis",
+    "sampleCount": 300,
+    "hitRate": 0.72,
+    "operationWaitP95Ms": 4,
+    "evictionsPerMinuteP95": 0,
+    "memoryBytesP95": 120000000
+  },
+  "runtime": {
+    "pool": "php-fpm",
+    "sampleCount": 80,
+    "workerMemoryBytesP95": 88000000,
+    "workerBusyRatioP95": 0.78,
+    "dbConnectionUtilizationP95": 0.67
+  },
+  "thresholds": {
+    "requestP95Ms": 900,
+    "queryCallsPerRequestP95": 4,
+    "cacheHitRateMin": 0.8
+  }
+}
