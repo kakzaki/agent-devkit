@@ -1,6 +1,6 @@
 ---
 name: laravel-pr-review
-description: Review Laravel/PHP changes for correctness, security, maintainability, and performance. Use for Laravel pull requests, commits, code diffs, or requests to review, audit, debug, or optimize a Laravel app, API, endpoint, Eloquent/database query, N+1 issue, queue/job, worker, memory use, or performance regression. Trigger on requests like "why is my Laravel app slow", "optimize this Laravel query", "check for N+1", or "optimasi performa Laravel".
+description: Review Laravel/PHP changes for correctness, security, maintainability, and performance. Use for Laravel pull requests, commits, code diffs, or controller/endpoint audits involving Eloquent or raw SQL, slow APIs, N+1 issues, queues, workers, memory use, or performance regressions. Trigger on requests to trace a controller's database queries, inspect DB::select/whereRaw/selectRaw, optimize an endpoint, or diagnose a slow Laravel app.
 ---
 
 # Laravel Change Review
@@ -35,6 +35,18 @@ Review the requested diff and report actionable findings. Do not edit applicatio
 | Octane / PHP-FPM | Request-specific state retained in long-lived workers, worker memory growth, mismatched pool sizing | Keep mutable request data out of singletons/static state under Octane. For FPM, derive worker limits from measured process memory and host capacity; do not prescribe a universal pool size |
 | DB connections | Connections opened repeatedly, long transactions, pool saturation, too many workers for DB capacity | Reuse framework-managed connections, end transactions promptly, and compare application concurrency with the database's connection budget. Do not increase pool size as a substitute for finding contention |
 
+## Audit one controller or endpoint
+
+When the user names an endpoint or controller action, make that the review scope even if the request is not framed as a PR review. If the target is ambiguous, ask for an HTTP method and route (for example, `GET /api/orders/{order}`) or a controller action (for example, `OrderController@show`).
+
+Trace the route through middleware, controller, services/repositories, models, resources/serializers, and relevant jobs or listeners. Follow the data shape and authorization/tenant constraints, not just the first query in the controller. For every database operation, report its source file and line and classify it as Eloquent, query builder, or raw SQL; distinguish the SQL visible in code from SQL that would require runtime evidence to confirm.
+
+Inspect raw SQL and raw query-builder fragments, including `DB::select`, `DB::selectOne`, `DB::statement`, `selectRaw`, `whereRaw`, `havingRaw`, `orderByRaw`, `joinRaw`, and `DB::raw`. Check that values use bound parameters rather than string interpolation or concatenation. Identifiers that cannot be bound (such as a dynamic sort column) must be selected from an explicit allowlist. Verify raw joins/subqueries preserve authorization and tenant predicates, and review result semantics before suggesting a rewrite.
+
+For query efficiency, check repeated queries/N+1, selected columns, result bounds and pagination, join row multiplication, filters and sort order, aggregates/subqueries, and transaction or lock scope. Discuss index compatibility only against supplied schema/index metadata and the identified database engine. Functions/casts on filtered columns, leading-wildcard patterns, and OR predicates are review prompts—not automatic proof that an index is unusable. Never label a query “optimized” from source code alone: state what the code supports, what is only a hypothesis, and what evidence is missing.
+
+When needed, ask for sanitized SQL with bindings, database engine/version, relevant schema and indexes, representative (non-sensitive) parameter shapes, a saved EXPLAIN JSON from an authorized non-production environment, or profiler measurements. Do not connect to a database or execute SQL to obtain this evidence. EXPLAIN estimates are not measured latency. If a recommendation involves DDL, a migration, or a data write, explicitly use `production-db-safety` to review the proposal; that skill is review-only and must not execute it.
+
 ## Optional local scanner
 
 Run the bundled static check from the application root:
@@ -45,7 +57,7 @@ node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --jso
 node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --markdown
 ```
 
-The scanner reads PHP source without executing it, skips dependency/build/storage folders and symbolic links, makes no network or database connections, and writes nothing. Its tokenizer distinguishes code from comments and string literals and tracks common loop blocks and query chains; this is a lightweight structural scan, **not a complete PHP AST or proof of runtime behavior**. Findings are review candidates, not confirmed defects. It can point out query-shaped calls in `foreach`/`for`/`while` loops, possible relation reads in loops, collection materialization without a nearby bound, raw `SELECT *`, boolean checks based on `count()`, and page sizes passed directly from request input.
+The scanner reads PHP source without executing it, skips dependency/build/storage folders and symbolic links, makes no network or database connections, and writes nothing. Its tokenizer distinguishes code from comments and string literals and tracks common loop blocks and query chains; this is a lightweight structural scan, **not a complete PHP AST, SQL parser, or proof of runtime behavior**. Findings are review candidates, not confirmed defects. It can point out query-shaped calls in `foreach`/`for`/`while` loops, possible relation reads in loops, collection materialization without a nearby bound, raw `SELECT *`, boolean checks based on `count()`, and page sizes passed directly from request input. It does not fully analyze arbitrary raw SQL or prove that a query is optimized; use the endpoint review workflow and supplied offline plan evidence for that.
 
 ### Optional staged-file pre-commit warning
 

@@ -52,10 +52,10 @@ The agent still needs Node.js 18+ and permission to run the installer. If the sk
 A skill is a set of instructions the agent reads; you don't run `SKILL.md` yourself. Open the project in your harness and explicitly name both skills when the task could involve database changes. For example, copy and adapt this prompt:
 
 ```text
-Use `laravel-pr-review` to review this Laravel endpoint for performance issues, including N+1 queries, slow database calls, unbounded results, and queue bottlenecks. If you recommend an index, migration, or schema change, also use `production-db-safety` to review its risks. Review only: do not connect to any database, run SQL or EXPLAIN ANALYZE, execute migrations, alter tables, or deploy changes. Use only the code and sanitized evidence I provide. If key database details are missing, mark the proposal CAUTION or BLOCKED and say what evidence is needed. Cite files and lines, and distinguish measurements from hypotheses.
+Use `laravel-pr-review` to audit [HTTP METHOD + route or Controller@action] in this Laravel project. Trace the request to its database operations, including Eloquent, query builder, and raw SQL calls such as DB::select, whereRaw, selectRaw, orderByRaw, and DB::raw. For each important query, assess bindings versus interpolation, filters, joins, selected columns, result limits/pagination, repeated queries, and whether available schema/index details support the query shape. Say what looks efficient, what is only a hypothesis, and what cannot be confirmed from code. If you need more evidence, ask me for sanitized SQL/bindings, database engine/version, schema/index metadata, profiler data, or a saved non-production EXPLAIN plan. If you recommend an index, migration, or schema change, also use `production-db-safety` to review its risks. Review only: do not connect to a database, run SQL or EXPLAIN ANALYZE, execute migrations, alter tables, or deploy changes. Cite files and lines, and separate measured evidence from hypotheses.
 ```
 
-`laravel-pr-review` reviews application code and performance; `production-db-safety` reviews proposed database operations but never executes them. Skill selection depends on the harness, so explicitly naming both is more reliable than expecting automatic chaining. These skills are guidance, not technical access controls—production protection must also come from database permissions and the deployment process.
+`laravel-pr-review` reviews application code and performance; `production-db-safety` reviews proposed database operations but never executes them. For an endpoint audit, provide the HTTP method and route or controller action. Skill selection depends on the harness, so explicitly naming both is more reliable than expecting automatic chaining. These skills are guidance, not technical access controls—production protection must also come from database permissions and the deployment process.
 
 Other phrases that may activate `laravel-pr-review` include “review Laravel performance”, “why is this endpoint slow?”, “check for N+1”, or “optimasi performa Laravel”. It reports findings and doesn't edit application code unless you ask it to.
 
@@ -70,7 +70,7 @@ node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --pro
 node /path/to/agent-devkit/skills/laravel-pr-review/scripts/perf-scan.js . --plan ./explain.json --schema ./schema.json --markdown
 ```
 
-It can statically inspect PHP source, import an offline OpenTelemetry JSON trace export into sanitized aggregates, compare profiles, and review saved PostgreSQL/MySQL plans plus metadata-only schemas. It never connects to a database or service, executes SQL, or measures the application itself. See the skill guide for format examples, limits, and evidence requirements.
+It can statically inspect PHP source, import an offline OpenTelemetry JSON trace export into sanitized aggregates, compare profiles, and review saved PostgreSQL/MySQL plans plus metadata-only schemas. The source scanner uses heuristics and does not fully analyze arbitrary raw SQL or prove a query is optimized. It never connects to a database or service, executes SQL, or measures the application itself. See the skill guide for format examples, limits, and evidence requirements.
 
 Install the optional local pre-commit warning in a Laravel repository, then remove it when no longer needed:
 

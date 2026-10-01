@@ -6,6 +6,7 @@
 - Added token-based PHP structure checks, PostgreSQL/MySQL EXPLAIN JSON review, schema metadata checks, Markdown output, and baseline regression gates.
 - Expanded Laravel performance tests to cover telemetry privacy, plan parsing, schema validation, static-analysis false positives, and CI gating.
 - Added an opt-in warning-only pre-commit hook that scans staged PHP blobs and safely preserves existing or user-modified hooks.
+- Expanded Laravel review guidance for endpoint-scoped Eloquent, query-builder, and raw-SQL audits using offline evidence only.
 
 ## 1.0.0 — 2026-09-30
 
